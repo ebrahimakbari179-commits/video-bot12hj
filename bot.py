@@ -1,121 +1,33 @@
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from database import get_video_by_link, increment_download_count
-from config import TOKEN, CHANNELS, MAIN_CHANNEL
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+from config import TOKEN
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
 
-class Form(StatesGroup):
-    waiting_for_join = State()
-    waiting_for_forward = State()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hello! Bot is working. Send /help for commands.")
 
-async def is_member(user_id, channel_id):
-    try:
-        member = await bot.get_chat_member(channel_id, user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except:
-        return False
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Commands:\n/start - Start the bot\n/help - Show this message")
 
-@dp.message(Command("start"))
-async def start(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    not_joined = [ch for ch in CHANNELS if not await is_member(user_id, ch["id"])]
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"You said: {update.message.text}")
 
-    if not_joined:
-        keyboard = InlineKeyboardMarkup(row_width=1)
-        for ch in not_joined:
-            keyboard.insert(InlineKeyboardButton(text=f"Join {ch['name']}", url=f"https://t.me/{ch['id'][1:]}"))
-        keyboard.insert(InlineKeyboardButton(text="I Joined All", callback_data="check_join"))
-
-        text = "Please join the channels below:\n\n"
-        for ch in not_joined:
-            text += f"- {ch['name']}\n"
-        text += "\nAfter joining, click the button."
-        await message.answer(text, reply_markup=keyboard)
-    else:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Done", callback_data="done")]
-        ])
-        await message.answer(
-            "Step 2: Forward the last 3 posts from @plus_top1 to 3 people.\n\n"
-            "After that, click the button below.",
-            reply_markup=keyboard
-        )
-
-@dp.callback_query(lambda c: c.data == "check_join")
-async def check_join(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    user_id = callback.from_user.id
-    not_joined = [ch for ch in CHANNELS if not await is_member(user_id, ch["id"])]
-
-    if not_joined:
-        keyboard = InlineKeyboardMarkup(row_width=1)
-        for ch in not_joined:
-            keyboard.insert(InlineKeyboardButton(text=f"Join {ch['name']}", url=f"https://t.me/{ch['id'][1:]}"))
-        keyboard.insert(InlineKeyboardButton(text="I Joined All", callback_data="check_join"))
-
-        text = "You are not yet a member of these channels:\n\n"
-        for ch in not_joined:
-            text += f"- {ch['name']}\n"
-        text += "\nPlease join them first."
-        await callback.message.edit_text(text, reply_markup=keyboard)
-    else:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Done", callback_data="done")]
-        ])
-        await callback.message.edit_text(
-            "Step 2: Forward the last 3 posts from @plus_top1 to 3 people.\n\n"
-            "After that, click the button below.",
-            reply_markup=keyboard
-        )
-
-@dp.callback_query(lambda c: c.data == "done")
-async def done(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await callback.message.edit_text("Please send the link of the video post you want.")
-
-@dp.message()
-async def handle_video_link(message: types.Message, state: FSMContext):
-    link = message.text.strip()
-
-    if MAIN_CHANNEL not in link:
-        await message.reply_text(f"Please send a link from {MAIN_CHANNEL} channel.")
-        return
-
-    video = get_video_by_link(link)
-
-    if video:
-        file_id, title, description = video
-        increment_download_count(link)
-
-        caption = f"{title}\n\n{description}" if description else f"{title}"
-        video_msg = await message.answer_video(video=file_id, caption=caption)
-
-        await message.reply_text("This video will be deleted in 20 seconds.")
-        await asyncio.sleep(20)
-        try:
-            await video_msg.delete()
-            await message.reply_text("The video has been deleted.")
-        except:
-            pass
-    else:
-        await message.reply_text("Video not found in database. Please check the link.")
-
-async def main():
-    await dp.start_polling(bot)
+def main():
+    app = Application.builder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    
+    print("Bot started...")
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    main()
 
 
 
