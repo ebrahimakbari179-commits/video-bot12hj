@@ -1,4 +1,5 @@
-import asyncio, logging
+import asyncio
+import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -9,55 +10,111 @@ from database import get_video_by_link, increment_download_count
 from config import TOKEN, CHANNELS, MAIN_CHANNEL
 
 logging.basicConfig(level=logging.INFO)
-bot, storage, dp = Bot(token=TOKEN), MemoryStorage(), Dispatcher(storage=MemoryStorage())
-class Form(StatesGroup): waiting_for_join, waiting_for_forward = State(), State()
+bot = Bot(token=TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+
+class Form(StatesGroup):
+    waiting_for_join = State()
+    waiting_for_forward = State()
 
 async def is_member(user_id, channel_id):
-    try: return (await bot.get_chat_member(channel_id, user_id)).status in ["member", "administrator", "creator"]
-    except: return False
+    try:
+        member = await bot.get_chat_member(channel_id, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except:
+        return False
 
 @dp.message(Command("start"))
-async def start(m: types.Message, s: FSMContext):
-    u, nj = m.from_user.id, [c for c in CHANNELS if not await is_member(u, c["id"])]
-    if nj:
-        kb = InlineKeyboardMarkup(row_width=1)
-        for c in nj: kb.insert(InlineKeyboardButton(text=f"Join {c['name']}", url=f"https://t.me/{c['id'][1:]}"))
-        kb.insert(InlineKeyboardButton(text="I Joined All", callback_data="check"))
-        await m.answer("Join channels:\n" + "\n".join(f"- {c['name']}" for c in nj) + "\n\nThen click.", reply_markup=kb)
-    else:
-        await m.answer("Step 2: Forward 3 posts from @plus_top1 to 3 people.\n\nThen click Done.",
-                       reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Done", callback_data="done")]]))
+async def start(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    not_joined = [ch for ch in CHANNELS if not await is_member(user_id, ch["id"])]
 
-@dp.callback_query(lambda c: c.data == "check")
-async def check(call, s: FSMContext):
-    await call.answer(); u, nj = call.from_user.id, [c for c in CHANNELS if not await is_member(u, c["id"])]
-    if nj:
-        kb = InlineKeyboardMarkup(row_width=1)
-        for c in nj: kb.insert(InlineKeyboardButton(text=f"Join {c['name']}", url=f"https://t.me/{c['id'][1:]}"))
-        kb.insert(InlineKeyboardButton(text="I Joined All", callback_data="check"))
-        await call.message.edit_text("Join:\n" + "\n".join(f"- {c['name']}" for c in nj) + "\n\nThen click.", reply_markup=kb)
+    if not_joined:
+        keyboard = InlineKeyboardMarkup(row_width=1)
+        for ch in not_joined:
+            keyboard.insert(InlineKeyboardButton(text=f"Join {ch['name']}", url=f"https://t.me/{ch['id'][1:]}"))
+        keyboard.insert(InlineKeyboardButton(text="I Joined All", callback_data="check_join"))
+
+        text = "Please join the channels below:\n\n"
+        for ch in not_joined:
+            text += f"- {ch['name']}\n"
+        text += "\nAfter joining, click the button."
+        await message.answer(text, reply_markup=keyboard)
     else:
-        await call.message.edit_text("Step 2: Forward 3 posts from @plus_top1 to 3 people.\n\nThen click Done.",
-                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Done", callback_data="done")]]))
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Done", callback_data="done")]
+        ])
+        await message.answer(
+            "Step 2: Forward the last 3 posts from @plus_top1 to 3 people.\n\n"
+            "After that, click the button below.",
+            reply_markup=keyboard
+        )
+
+@dp.callback_query(lambda c: c.data == "check_join")
+async def check_join(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    not_joined = [ch for ch in CHANNELS if not await is_member(user_id, ch["id"])]
+
+    if not_joined:
+        keyboard = InlineKeyboardMarkup(row_width=1)
+        for ch in not_joined:
+            keyboard.insert(InlineKeyboardButton(text=f"Join {ch['name']}", url=f"https://t.me/{ch['id'][1:]}"))
+        keyboard.insert(InlineKeyboardButton(text="I Joined All", callback_data="check_join"))
+
+        text = "You are not yet a member of these channels:\n\n"
+        for ch in not_joined:
+            text += f"- {ch['name']}\n"
+        text += "\nPlease join them first."
+        await callback.message.edit_text(text, reply_markup=keyboard)
+    else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Done", callback_data="done")]
+        ])
+        await callback.message.edit_text(
+            "Step 2: Forward the last 3 posts from @plus_top1 to 3 people.\n\n"
+            "After that, click the button below.",
+            reply_markup=keyboard
+        )
 
 @dp.callback_query(lambda c: c.data == "done")
-async def done(call, s: FSMContext):
-    await call.answer(); await call.message.edit_text("Send video link.")
+async def done(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text("Please send the link of the video post you want.")
 
 @dp.message()
-async def handle(m: types.Message):
-    l = m.text.strip()
-    if MAIN_CHANNEL not in l: await m.reply_text(f"Send link from {MAIN_CHANNEL}."); return
-    v = get_video_by_link(l)
-    if not v: await m.reply_text("Not found."); return
-    fid, t, d = v; increment_download_count(l)
-    msg = await m.answer_video(video=fid, caption=f"{t}\n\n{d}" if d else t)
-    await m.reply_text("Deleted in 20s."); await asyncio.sleep(20)
-    try: await msg.delete(); await m.reply_text("Deleted.")
-    except: pass
+async def handle_video_link(message: types.Message, state: FSMContext):
+    link = message.text.strip()
 
-async def main(): await dp.start_polling(bot, timeout=60)
-if __name__ == "__main__": asyncio.run(main())
+    if MAIN_CHANNEL not in link:
+        await message.reply_text(f"Please send a link from {MAIN_CHANNEL} channel.")
+        return
+
+    video = get_video_by_link(link)
+
+    if video:
+        file_id, title, description = video
+        increment_download_count(link)
+
+        caption = f"{title}\n\n{description}" if description else f"{title}"
+        video_msg = await message.answer_video(video=file_id, caption=caption)
+
+        await message.reply_text("This video will be deleted in 20 seconds.")
+        await asyncio.sleep(20)
+        try:
+            await video_msg.delete()
+            await message.reply_text("The video has been deleted.")
+        except:
+            pass
+    else:
+        await message.reply_text("Video not found in database. Please check the link.")
+
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
 
 
